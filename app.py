@@ -6,41 +6,44 @@ from dotenv import load_dotenv
 import numpy as np
 import os
 
-# Load env
+# Load environment variables
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# Gemini models
+# Gemini Models
 EMBED_MODEL = "models/text-embedding-004"
 LLM_MODEL = "gemini-1.5-flash"
 
-# Vector DB storage
-stored_chunks = []
-stored_embeddings = []
+st.set_page_config(page_title="Simple RAG Model", layout="wide")
 
-
-# -----------------------------
-# Extract text from PDF
-# -----------------------------
-def extract_pdf_text(pdf_file):
-    reader = PdfReader(pdf_file)
+# ------------------------------------------------------------
+# PDF TEXT EXTRACTION
+# ------------------------------------------------------------
+@st.cache_data
+def extract_text_from_pdf(file):
+    reader = PdfReader(file)
     text = ""
     for page in reader.pages:
-        text += page.extract_text() + "\n"
+        content = page.extract_text()
+        if content:
+            text += content + "\n"
     return text
 
 
-# -----------------------------
-# Create chunks from large text
-# -----------------------------
+# ------------------------------------------------------------
+# TEXT CHUNKING
+# ------------------------------------------------------------
+@st.cache_data
 def chunk_text(text, size=500):
     words = text.split()
-    return [" ".join(words[i:i+size]) for i in range(0, len(words), size)]
+    chunks = [" ".join(words[i:i + size]) for i in range(0, len(words), size)]
+    return chunks
 
 
-# -----------------------------
-# Embed text using Gemini
-# -----------------------------
+# ------------------------------------------------------------
+# GET EMBEDDING (cached for speed)
+# ------------------------------------------------------------
+@st.cache_data
 def get_embedding(text):
     embedding = genai.embed_content(
         model=EMBED_MODEL,
@@ -49,10 +52,10 @@ def get_embedding(text):
     return np.array(embedding)
 
 
-# -----------------------------
-# Search most relevant chunks
-# -----------------------------
-def retrieve(query, top_k=3):
+# ------------------------------------------------------------
+# RAG RETRIEVAL
+# ------------------------------------------------------------
+def retrieve(query, stored_chunks, stored_embeddings, top_k=3):
     if len(stored_embeddings) == 0:
         return []
 
@@ -65,9 +68,9 @@ def retrieve(query, top_k=3):
     return [stored_chunks[i] for i in top_idx]
 
 
-# -----------------------------
-# Generate final answer
-# -----------------------------
+# ------------------------------------------------------------
+# GENERATE FINAL ANSWER (LLM)
+# ------------------------------------------------------------
 def answer_with_context(query, context_chunks):
     context = "\n\n".join(context_chunks)
     prompt = f"""
@@ -78,7 +81,7 @@ def answer_with_context(query, context_chunks):
 
     Question: {query}
 
-    Answer using only the context provided.
+    Answer ONLY using the context provided.
     """
 
     model = genai.GenerativeModel(LLM_MODEL)
@@ -86,38 +89,44 @@ def answer_with_context(query, context_chunks):
     return response.text
 
 
-# -----------------------------
-# Streamlit UI
-# -----------------------------
-st.title("📚 Simple RAG Model (PDF + Gemini)")
+# ------------------------------------------------------------
+# STREAMLIT UI
+# ------------------------------------------------------------
+st.title("📚 Simple RAG Chatbot using Gemini + PDFs")
 
-uploaded_files = st.file_uploader("Upload 2–3 PDF files", type="pdf", accept_multiple_files=True)
+uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
+
+stored_chunks = []
+stored_embeddings = []
 
 if uploaded_files:
-    for pdf in uploaded_files:
-        raw_text = extract_pdf_text(pdf)
-        chunks = chunk_text(raw_text)
+    with st.spinner("Processing PDFs..."):
+        for pdf in uploaded_files:
+            text = extract_text_from_pdf(pdf)
+            chunks = chunk_text(text)
 
-        for ch in chunks:
-            stored_chunks.append(ch)
-            stored_embeddings.append(get_embedding(ch))
+            for ch in chunks:
+                stored_chunks.append(ch)
+                stored_embeddings.append(get_embedding(ch))
 
-    st.success("PDFs processed and added to vector store!")
+    st.success(f"{len(uploaded_files)} PDF(s) processed successfully!")
 
 
-query = st.text_input("Ask a question from the PDFs")
+query = st.text_input("🔎 Ask a question based on the uploaded PDFs")
 
 if st.button("Search"):
-    if query.strip() == "":
-        st.warning("Please enter a query")
+    if not query.strip():
+        st.warning("Please enter a valid query!")
     else:
-        relevant = retrieve(query)
+        with st.spinner("Retrieving relevant info..."):
+            relevant_chunks = retrieve(query, stored_chunks, stored_embeddings)
 
-        st.write("### 🔍 Retrieved Chunks")
-        for r in relevant:
-            st.info(r[:500] + "...")
+        st.write("### 📌 Retrieved Chunks")
+        for chunk in relevant_chunks:
+            st.info(chunk[:500] + "...")
 
+        with st.spinner("Generating answer..."):
+            answer = answer_with_context(query, relevant_chunks)
 
-        answer = answer_with_context(query, relevant)
-        st.write("### 🤖 Answer")
+        st.write("### 🤖 Final Answer")
         st.success(answer)
